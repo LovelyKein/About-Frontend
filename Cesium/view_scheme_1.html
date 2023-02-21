@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en" style="width: 100%; height: 100vh">
+
+<head style="width: 100%; height: 100vh; background-color: black">
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.90/Build/Cesium/Widgets/widgets.css" />
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.90/Build/Cesium/Cesium.js"></script>
+  <title>通视线分析</title>
+  <style>
+    * {
+      padding: 0;
+      margin: 0;
+      border: none;
+    }
+
+    #cesium_container {
+      width: 100%;
+      height: 100%;
+    }
+
+    .btn {
+      position: absolute;
+      top: 1vw;
+      left: 1vw;
+      display: flex;
+      justify-content: flex-start;
+      align-items: center;
+      flex-wrap: nowrap;
+      flex-direction: row;
+    }
+
+    .btn>button {
+      outline: none;
+      border: none;
+      height: 34px;
+      border-radius: 4px;
+      padding: 0 10px;
+      box-sizing: border-box;
+      color: #202020;
+      font-size: 14px;
+      font-weight: normal;
+      text-align: center;
+      line-height: 1em;
+      background-color: #eeeeee;
+      opacity: 0.9;
+      transition: all 0.2s;
+      margin-left: 1vw;
+      cursor: pointer;
+    }
+
+    .btn>button:first-child {
+      margin-left: 0;
+    }
+
+    .btn>button:hover {
+      background-color: #ffffff;
+      opacity: 1;
+    }
+  </style>
+</head>
+
+<body style="width: 100%; height: 100%">
+  <!-- 地图容器 -->
+  <div id="cesium_container"></div>
+  <div class="btn">
+    <button class="choose" onclick="controlMouseEvent(true)">选点分析</button>
+    <button class="clear" onclick="clearAll()">清除结果</button>
+  </div>
+  <script>
+    // window.CESIUM_BASE_URL = "/Cesium/"; // 设置 Cesium 静态资源基本路径
+    // 设置 cesium token
+    Cesium.Ion.defaultAccessToken =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJjYjkyZWNjNC00NmVkLTQ3OTktOTUwOC0yODlmNjMxOTRjZjQiLCJpZCI6MTA4OTA1LCJpYXQiOjE2NjM4NDc3NTl9.D-ndvVOBsHIBY0doIFl4yJmr5iTE7ZEDLkZrZ4kMI9s";
+
+    // 设置 Cesium 初始化时的默认位置视角（中国大陆）
+    Cesium.Camera.DEFAULT_VIEW_RECTANGLE = Cesium.Rectangle.fromDegrees(
+      89.5, // 西经
+      20.4, // 南纬
+      110.4, // 东经
+      61.2 // 北纬
+    );
+
+    const viewer = new Cesium.Viewer("cesium_container", {
+      geocoder: false, // 是否创建 搜索 组件按钮
+      homeButton: true, // 是否创建 home 组件按钮
+      infoBox: false, // 关闭信息窗口，解决控制台报错
+      sceneModePicker: false, // 是否创建 视角模式 组件按钮
+      baseLayerPicker: false, // 是否创建 图层选择 组件按钮
+      navigationHelpButton: false, // 是否创建 操作帮助 组件按钮
+      animation: false, // 是否创建 动画 组件
+      timeline: false, // 是否创建 时间轴 组件
+      fullscreenButton: true, // 是否创建 全屏 组件按钮
+      vrButton: false, // 是否创建 VR模式 组件按钮
+      scene3DOnly: true, // 是否只显示 3D 视角
+      // 添加并设置地形数据（Cesium 官方提供）
+      terrainProvider: new Cesium.createWorldTerrain({
+        requestVertexNormals: true, // 是否开启 顶点法向光照
+        requestWaterMask: true, // 是否开启 水面 效果
+      }),
+    });
+    viewer.cesiumWidget.creditContainer.style.display = "none"; // 去掉 logo 水印
+
+    const destination = Cesium.Cartesian3.fromDegrees(80.2, 32.2, 8500); // 传递经度、纬度、高度数据，创建目的地位置
+
+    viewer.camera.flyTo({
+      destination,
+      // 相机视角方向
+      orientation: {
+        heading: Cesium.Math.toRadians(0), // 朝向，航向角
+        pitch: Cesium.Math.toRadians(-25), // 俯仰角
+        roll: 0, // 滚转角
+      },
+    });
+  </script>
+  <script>
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas); // 鼠标事件柄
+
+    let pickPoints = []; // 选中的点实体
+    let pickPositions = []; // 选中的点的位置
+    let isPicking = false; // 是否在选择点的过程中
+    let indecateLine = null; // 选点时的指示线
+    let viewAngleLines = []; // 视域范围的夹角线
+    let allViewLine = []; // 保存所有通视线实体
+
+    const viewAngle = 30 // 视线角度
+    const gap = 5
+
+    const controlMouseEvent = (flag) => {
+      if (flag) {
+        // 鼠标单击
+        handler.setInputAction((event) => {
+          const earthPosition = viewer.scene.pickPosition(event.position); // 获取鼠标点击的位置，会有存在 undefined 的情况
+          if (Cesium.defined(earthPosition)) {
+            let labelStr = isPicking ? "目标点" : "观察点";
+            isPicking = true;
+            const startPoint = createViewPoint(earthPosition, labelStr); // 实体
+            pickPoints.push(startPoint); // 推送观察点实体
+            pickPositions.push(earthPosition); // 点位置
+            const dynamicPositions = new Cesium.CallbackProperty(() => {
+              return pickPositions; //每次鼠标移动时都会发生改变出发函数回调，获得最新位置
+            }, false);
+            // 绘制指示线
+            indecateLine = createLine(
+              dynamicPositions,
+              new Cesium.PolylineArrowMaterialProperty(Cesium.Color.YELLOW),
+              4,
+              Cesium.Color.YELLOW,
+              false
+            );
+
+            // 已经完成了一次视域分析
+            if (pickPoints.length >= 2) {
+              // 开始计算扇形可视域
+              fansectorAnalysis(viewAngle, gap, pickPositions[0], pickPositions[1])
+              // 移除指示线
+              if (indecateLine) {
+                viewer.entities.remove(indecateLine)
+                indecateLine = null;
+              }
+              // 移除视域角度线
+              if (viewAngleLines.length) {
+                viewAngleLines.forEach((line) => {
+                  viewer.entities.remove(line);
+                });
+                viewAngleLines = [];
+              }
+              controlMouseEvent(false); // 结束事件监听
+              isPicking = false;
+            }
+          }
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK); // 鼠标单击
+
+        // 鼠标移动
+        handler.setInputAction((event) => {
+          // 获取鼠标移动的位置
+          const moveingPosition = viewer.scene.pickPosition(
+            event.endPosition
+          );
+          if (Cesium.defined(moveingPosition)) {
+            pickPositions.pop(); // 每次都删除最后一个点，再更新位置
+            pickPositions.push(moveingPosition); // 活动点位置
+            if (isPicking) {
+              if (viewAngleLines.length) {
+                viewAngleLines.forEach((line) => {
+                  viewer.entities.remove(line);
+                });
+                viewAngleLines = [];
+              }
+              // 绘制视线角度线
+              viewAngleLines = createAngleSector(
+                pickPositions[0],
+                pickPositions[1]
+              )
+            }
+          }
+        }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+      } else {
+        // 移除事件监听
+        handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK); // 鼠标左键单击
+        handler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE); // 鼠标移动
+      }
+    };
+
+    // 创建点
+    const createViewPoint = (position, text) => {
+      // 文字标签
+      const label = viewer.entities.add({
+        position, // 位置
+        // 文字
+        label: {
+          text, // 文字内容
+          font: "12px sans-serif", // 字体及大小
+          fillColor: Cesium.Color.WHITE, // 填充色
+          outlineColor: Cesium.Color.BLACK, // 边框色
+          outlineWidth: 2, // 边框宽度
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE, // FILL：填充文字；OUTLINE：勾勒标签；FILL_AND_OUTLINE：填充并勾勒标签
+          pixelOffset: new Cesium.Cartesian2(0, -20), // 文字偏移量
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER, // 水平显示位置
+          verticalOrigin: Cesium.VerticalOrigin.TOP, // 垂直显示位置
+        },
+      });
+      // 点
+      const point = viewer.entities.add({
+        // 位置
+        position,
+        // 添加 点类型 实体
+        point: {
+          pixelSize: 4,
+          color: Cesium.Color.BLUEVIOLET, // 填充颜色
+          outlineColor: Cesium.Color.WHITE, // 轮廓颜色
+          outlineWidth: 1, // 轮廓宽度
+        },
+      });
+      return {
+        label,
+        point,
+      };
+    };
+
+    // 绘制线
+    const createLine = (
+      positions,
+      material,
+      lineWidth,
+      depthFailMaterial,
+      clampToGround = false // 是否开启贴地功能
+    ) => {
+      const line = viewer.entities.add({
+        polyline: {
+          positions,
+          clampToGround,
+          width: lineWidth, // 线宽
+          // arcType: Cesium.ArcType.NONE,
+          material, // 纯色值
+          depthFailMaterial: depthFailMaterial, //被地形遮挡部分的颜色
+        },
+      });
+      return line;
+    };
+
+    //计算某一点绕另一点旋转radian后的终点坐标
+    const rotatePoint = (radian, startPoint, endPoint) => {
+      const startCartographic = Cesium.Cartographic.fromCartesian(startPoint); // 起点经纬度坐标
+      const endCartographic = Cesium.Cartographic.fromCartesian(endPoint); // 终点经纬度坐标
+      const endPointHeight = endCartographic.height // 目标点的高度
+      // 初始化投影坐标系
+      /*
+        假设对图片上任意点a，绕一个坐标点o逆时针旋转angle角度后的新的坐标点b，有公式：
+        b.x = ( a.x - o.x)*cos(angle) - (a.y - o.y)*sin(angle) + o.x
+        b.y = (a.x - o.x)*sin(angle) + (a.y - o.y)*cos(angle) + o.y
+      */
+      const webMercatorProjection = new Cesium.WebMercatorProjection(
+        viewer.scene.globe.ellipsoid
+      );
+      const startMercator = webMercatorProjection.project(startCartographic); // 起点墨卡托坐标
+      const endMercator = webMercatorProjection.project(endCartographic); // 终点墨卡托坐标
+      // 边界线墨卡托坐标
+      const position_Mercator = new Cesium.Cartesian3(
+        (endMercator.x - startMercator.x) * Math.cos(radian) -
+        (endMercator.y - startMercator.y) * Math.sin(radian) +
+        startMercator.x,
+        (endMercator.x - startMercator.x) * Math.sin(radian) +
+        (endMercator.y - startMercator.y) * Math.cos(radian) +
+        startMercator.y,
+        startMercator.z
+      );
+      // 旋转后的目标点经纬度坐标
+      const position_Cartographic = webMercatorProjection.unproject(position_Mercator);
+      // 旋转后的目标点笛卡尔空间直角坐标
+      // let position_Cartesian3 = Cesium.Cartographic.toCartesian(
+      //   position_Cartographic.clone()
+      // );
+      const lng = Cesium.Math.toDegrees(position_Cartographic.longitude) // 经度
+      const lat = Cesium.Math.toDegrees(position_Cartographic.latitude) // 纬度
+      const endPosition_Cartesian3 = Cesium.Cartesian3.fromDegrees(lng, lat, endPointHeight)
+      return endPosition_Cartesian3;
+    };
+
+    // 绘制区域角度线
+    const createAngleSector = (startPoint, endPoint) => {
+      // 左侧终点
+      const leftEndPosition = rotatePoint(
+        Cesium.Math.toRadians(-viewAngle),
+        startPoint,
+        endPoint
+      );
+      // 右侧终点
+      const rightEndPosition = rotatePoint(
+        Cesium.Math.toRadians(viewAngle),
+        startPoint,
+        endPoint
+      );
+      const leftLine = createLine(
+        [startPoint, leftEndPosition],
+        new Cesium.PolylineDashMaterialProperty({
+          dashLength: 30,
+          color: Cesium.Color.YELLOW,
+        }),
+        3,
+        Cesium.Color.YELLOW,
+        false
+      );
+      const rightLine = createLine(
+        [startPoint, rightEndPosition],
+        new Cesium.PolylineDashMaterialProperty({
+          dashLength: 30,
+          color: Cesium.Color.YELLOW,
+        }),
+        3,
+        Cesium.Color.YELLOW,
+        false
+      );
+      return [leftLine, rightLine];
+    };
+
+    // 扇形区域视域可视性分析
+    const fansectorAnalysis = (viewAngle, gap, startPosition, endPosition) => {
+      const fanSectorLinePositions = []
+      for (let angle = -viewAngle; angle <= viewAngle; angle += gap) {
+        const rotateEndPosition = rotatePoint(
+          Cesium.Math.toRadians(angle), // 需要转为 弧度
+          startPosition,
+          endPosition
+        )
+        fanSectorLinePositions.push([startPosition, rotateEndPosition])
+      }
+      fanSectorLinePositions.forEach((item) => {
+        viewAnalysis(item[0], item[1])
+      })
+    }
+
+    // 两点 通视分析
+    const viewAnalysis = (startPosition, endPosition) => {
+      // 此处方法为使用 Ray 射线计算
+      // 如果需要知道通视线上的若干点的贴地情况，使用 viewer.scene.clampToHeightMostDetailed(cartesians)
+      const distance = Cesium.Cartesian3.distance(startPosition, endPosition); // 观察点与目标点的距离
+      const direction = Cesium.Cartesian3.normalize(
+        Cesium.Cartesian3.subtract(
+          endPosition,
+          startPosition,
+          new Cesium.Cartesian3()
+        ),
+        new Cesium.Cartesian3()
+      ); // 视线方向。归一化的单位向量
+
+      const ray = new Cesium.Ray(startPosition, direction); // 射线
+      // const intersection = viewer.scene.globe.pick(ray, viewer.scene) // 计算交点坐标
+      const intersection = viewer.scene.pickFromRay(ray); // 交点可能比 视域距离远
+      // console.log(intersection, "intersection");
+      if (Cesium.defined(intersection)) {
+        const intersectionPosition = intersection.position; // 交点位置
+        const rayIntersectiondistance = Cesium.Cartesian3.distance(
+          startPosition,
+          intersectionPosition
+        ); // 射线交点到观察点的距离
+        if (distance >= rayIntersectiondistance) {
+          // 可视线
+          const canViewLine = createLine(
+            [startPosition, intersectionPosition],
+            Cesium.Color.GREEN,
+            2,
+            Cesium.Color.GREEN,
+            false
+          );
+          // 不可视线
+          const notViewLine = createLine(
+            [intersectionPosition, endPosition],
+            Cesium.Color.RED,
+            2,
+            // Cesium.Color.RED,
+            new Cesium.PolylineDashMaterialProperty({
+              dashLength: 30,
+              color: Cesium.Color.RED.withAlpha(0.3)
+            }),
+            false
+          );
+          allViewLine.push(canViewLine, notViewLine);
+        } else {
+          // 可视线
+          const canViewLine = createLine(
+            [startPosition, endPosition],
+            Cesium.Color.GREEN,
+            2,
+            Cesium.Color.GREEN,
+            false
+          );
+          allViewLine.push(canViewLine);
+        }
+      } else {
+        // 可视线
+        const canViewLine = createLine(
+          [startPosition, endPosition],
+          Cesium.Color.GREEN,
+          2,
+          Cesium.Color.GREEN,
+          false
+        );
+        allViewLine.push(canViewLine);
+      }
+    };
+
+    // 清除分析状态和结果
+    const clearAll = () => {
+      // 移除指示线
+      if (indecateLine) {
+        viewer.entities.remove(indecateLine)
+        indecateLine = null;
+      }
+      // 移除视域角度线
+      if (viewAngleLines.length) {
+        viewAngleLines.forEach((line) => {
+          viewer.entities.remove(line);
+        });
+        viewAngleLines = [];
+      }
+      // 标记点实体
+      if (pickPoints.length) {
+        pickPoints.forEach((item) => {
+          viewer.entities.remove(item.point); // 标记点
+          viewer.entities.remove(item.label); // 标记文本
+        });
+        pickPoints = [];
+      }
+      // 标记点位置
+      pickPositions = []
+      // 视域分析线
+      if (allViewLine.length) {
+        allViewLine.forEach((item) => {
+          viewer.entities.remove(item)
+        })
+        allViewLine = []
+      }
+      // 选择状态
+      isPicking = false
+      // 移除事件监听
+      controlMouseEvent(false)
+    }
+
+    // controlMouseEvent(true); // 开启事件
+  </script>
+</body>
+
+</html>

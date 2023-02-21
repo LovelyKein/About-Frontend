@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en" style="width: 100%; height: 100vh">
+
+<head style="width: 100%; height: 100vh; background-color: black">
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.102/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.102/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <title>通视线分析</title>
+  <style>
+    * {
+      padding: 0;
+      margin: 0;
+      border: none;
+    }
+
+    #cesium_container {
+      width: 100%;
+      height: 100%;
+    }
+
+    .btn {
+      position: absolute;
+      top: 1vw;
+      left: 1vw;
+      display: flex;
+      justify-content: flex-start;
+      align-items: center;
+      flex-wrap: nowrap;
+      flex-direction: row;
+    }
+
+    .btn>button {
+      outline: none;
+      border: none;
+      height: 34px;
+      border-radius: 4px;
+      padding: 0 10px;
+      box-sizing: border-box;
+      color: #202020;
+      font-size: 14px;
+      font-weight: normal;
+      text-align: center;
+      line-height: 1em;
+      background-color: #eeeeee;
+      opacity: 0.9;
+      transition: all 0.2s;
+      margin-left: 1vw;
+      cursor: pointer;
+    }
+
+    .btn>button:first-child {
+      margin-left: 0;
+    }
+
+    .btn>button:hover {
+      background-color: #ffffff;
+      opacity: 1;
+    }
+  </style>
+</head>
+
+<body style="width: 100%; height: 100%">
+  <!-- 地图容器 -->
+  <div id="cesium_container"></div>
+  <div class="btn">
+    <button class="choose" onclick="controlMouseEvent(true)">选点分析</button>
+    <button class="clear" onclick="clearAll()">清除结果</button>
+  </div>
+  <script>
+    // 设置 cesium token
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJjYjkyZWNjNC00NmVkLTQ3OTktOTUwOC0yODlmNjMxOTRjZjQiLCJpZCI6MTA4OTA1LCJpYXQiOjE2NjM4NDc3NTl9.D-ndvVOBsHIBY0doIFl4yJmr5iTE7ZEDLkZrZ4kMI9s";
+
+    // 设置 Cesium 初始化时的默认位置视角（中国大陆）
+    Cesium.Camera.DEFAULT_VIEW_RECTANGLE = Cesium.Rectangle.fromDegrees(
+      89.5, // 西经
+      20.4, // 南纬
+      110.4, // 东经
+      61.2 // 北纬
+    );
+
+    // 地形提供
+    const terrainProvider = new Cesium.createWorldTerrain({
+        requestVertexNormals: true, // 是否开启 顶点法向光照
+        requestWaterMask: true, // 是否开启 水面 效果
+      })
+
+    const viewer = new Cesium.Viewer("cesium_container", {
+      geocoder: false, // 是否创建 搜索 组件按钮
+      homeButton: true, // 是否创建 home 组件按钮
+      infoBox: false, // 关闭信息窗口，解决控制台报错
+      sceneModePicker: false, // 是否创建 视角模式 组件按钮
+      baseLayerPicker: false, // 是否创建 图层选择 组件按钮
+      navigationHelpButton: false, // 是否创建 操作帮助 组件按钮
+      animation: false, // 是否创建 动画 组件
+      timeline: false, // 是否创建 时间轴 组件
+      fullscreenButton: true, // 是否创建 全屏 组件按钮
+      vrButton: false, // 是否创建 VR模式 组件按钮
+      scene3DOnly: true, // 是否只显示 3D 视角
+      // 添加并设置地形数据（Cesium 官方提供）
+      terrainProvider
+    });
+    viewer.cesiumWidget.creditContainer.style.display = "none"; // 去掉 logo 水印
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+
+    const destination = Cesium.Cartesian3.fromDegrees(80.2, 32.2, 8500); // 传递经度、纬度、高度数据，创建目的地位置
+
+    viewer.camera.flyTo({
+      destination,
+      // 相机视角方向
+      orientation: {
+        heading: Cesium.Math.toRadians(0), // 朝向，航向角
+        pitch: Cesium.Math.toRadians(-25), // 俯仰角
+        roll: 0, // 滚转角
+      },
+    });
+  </script>
+  <script>
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas); // 鼠标事件柄
+
+    let pickPoints = []; // 选中的点实体
+    let pickPositions = []; // 选中的点的位置
+    let isPicking = false; // 是否在选择点的过程中
+    let indecateLine = null; // 选点时的指示线
+    // let viewAngleLines = []; // 视域范围的夹角线
+    // let allViewLine = []; // 保存所有通视线实体
+
+    // const viewAngle = 30 // 视线角度
+    // const gap = 5
+
+    const gap = 2 // 取样点间隔
+    const peopleTall = 2 // 人的高度
+    let viewLineGapPositions = [] // 视线上的间隔点
+    let clampGapPositions = [] // 视线计算的贴地点
+    let analysisLine = [] // 分析结果线实体
+    let analysisPoint = [] // 分析结果点
+
+
+    const controlMouseEvent = (flag) => {
+      if (flag) {
+        // 鼠标单击
+        handler.setInputAction((event) => {
+          // 当创建的点已经有两个时，再次点击直接返回
+          if (pickPoints.length === 2) {
+            controlMouseEvent(false)
+            return false
+          }
+          // 清除掉第一次点击绘制的指示线
+          if (indecateLine) {
+            viewer.entities.remove(indecateLine)
+            indecateLine = null;
+          }
+          let earthPosition = viewer.scene.pickPosition(event.position); // 获取鼠标点击的位置，会有存在 undefined 的情况
+          if (Cesium.defined(earthPosition)) {
+            // 将观察点 增加 人的身高
+            if (!isPicking) {
+              const { lngLat, height } = cartesianToLngLat(earthPosition)
+              earthPosition = Cesium.Cartesian3.fromDegrees(lngLat[0], lngLat[1], height + peopleTall)
+            }
+            let labelStr = isPicking ? "目标点" : "观察点";
+            isPicking = true;
+            const startPoint = createViewPoint(earthPosition, labelStr); // 实体
+            pickPoints.push(startPoint); // 观察点实体
+            pickPositions.pop(); // 每次都删除最后一个点，再更新位置
+            pickPositions.push(earthPosition); // 点位置
+            console.log(pickPositions ,'click')
+            const dynamicPositions = new Cesium.CallbackProperty(() => {
+              return pickPositions; //每次鼠标移动时都会发生改变出发函数回调，获得最新位置
+            }, false);
+            // 绘制指示线
+            indecateLine = createLine(
+              dynamicPositions,
+              new Cesium.PolylineArrowMaterialProperty(Cesium.Color.YELLOW),
+              4,
+              Cesium.Color.YELLOW,
+              false
+            );
+
+            // 准备计算
+            if (pickPoints.length >= 2) {
+              // 移除指示线
+              if (indecateLine) {
+                viewer.entities.remove(indecateLine)
+                indecateLine = null;
+              }
+
+              viewAnalysis(pickPositions[0], pickPositions[1]) // 开始视域计算
+
+              controlMouseEvent(false); // 结束事件监听
+              isPicking = false;
+            }
+          }
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK); // 鼠标单击
+
+        // 鼠标移动
+        handler.setInputAction((event) => {
+          if (!isPicking) {
+            return false
+          }
+          // 获取鼠标移动的位置
+          const moveingPosition = viewer.scene.pickPosition(
+            event.endPosition
+          );
+          if (Cesium.defined(moveingPosition)) {
+            pickPositions.splice(1, 1, moveingPosition) // 每次都删除掉[1]下标的点，再更新位置
+            // console.log(pickPositions, 'move')
+          }
+        }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+      } else {
+        // 移除事件监听
+        handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK); // 鼠标左键单击
+        handler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE); // 鼠标移动
+      }
+    };
+
+    // 创建点
+    const createViewPoint = (position, text) => {
+      // 文字标签
+      const label = viewer.entities.add({
+        position, // 位置
+        // 文字
+        label: {
+          text, // 文字内容
+          font: "14px sans-serif", // 字体及大小
+          fillColor: Cesium.Color.WHITE, // 填充色
+          outlineColor: Cesium.Color.BLACK, // 边框色
+          outlineWidth: 3, // 边框宽度
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE, // FILL：填充文字；OUTLINE：勾勒标签；FILL_AND_OUTLINE：填充并勾勒标签
+          pixelOffset: new Cesium.Cartesian2(0, -20), // 文字偏移量
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER, // 水平显示位置
+          verticalOrigin: Cesium.VerticalOrigin.TOP, // 垂直显示位置
+        },
+      });
+      // 点
+      const point = viewer.entities.add({
+        // 位置
+        position,
+        // 添加 点类型 实体
+        point: {
+          pixelSize: 6,
+          color: Cesium.Color.BLUEVIOLET, // 填充颜色
+          outlineColor: Cesium.Color.WHITE, // 轮廓颜色
+          outlineWidth: 1, // 轮廓宽度
+        },
+      });
+      return {
+        label,
+        point,
+      };
+    };
+
+    // 绘制线
+    const createLine = (
+      positions,
+      material,
+      lineWidth,
+      depthFailMaterial,
+      clampToGround = false // 是否开启贴地功能
+    ) => {
+      const line = viewer.entities.add({
+        polyline: {
+          positions,
+          clampToGround,
+          width: lineWidth, // 线宽
+          // arcType: Cesium.ArcType.NONE,
+          material, // 纯色值
+          depthFailMaterial: depthFailMaterial, //被地形遮挡部分的颜色
+        },
+      });
+      return line;
+    };
+
+    // 两点 通视分析
+    const viewAnalysis = (startPosition, endPosition) => {
+      const distance = Cesium.Cartesian3.distance(startPosition, endPosition); // 观察点与目标点的距离
+      const pointCount = Math.round(distance) / gap  // 取样点数量
+      // 视线方向，归一化的单位向量
+      // const direction = Cesium.Cartesian3.normalize(
+      //   Cesium.Cartesian3.subtract(
+      //     endPosition,
+      //     startPosition,
+      //     new Cesium.Cartesian3()
+      //   ),
+      //   new Cesium.Cartesian3()
+      // )
+
+      // 插值计算
+      for (let index = 0; index <= pointCount; index ++) {
+        const lerpPosition = Cesium.Cartesian3.lerp(startPosition, endPosition, index / pointCount, new Cesium.Cartesian3())
+        viewLineGapPositions.push(lerpPosition)
+      }
+
+      // 开始分析
+      const visibleLineInfo = [] // 线条绘制数据
+      let divisionIndex = 0 // 分割点索引下标
+      // 地理坐标的视线间隔点
+      const cartographicViewLineGapPositions = viewLineGapPositions.map((position) => {
+        return Cesium.Cartographic.fromCartesian(position)
+      })
+      // 地形高度异步查询
+      Cesium.sampleTerrainMostDetailed(terrainProvider, cartographicViewLineGapPositions).then((res) => {
+        // 笛卡尔坐标的 贴地点
+        const resCartesian = res.map((item) => {
+          return Cesium.Cartesian3.fromRadians(item.longitude, item.latitude, item.height)
+        })
+        // 寻找是否有分割点，分割点位置 division
+        const division = viewLineGapPositions.find((position, index) => {
+          if (Cesium.defined(resCartesian[index])) {
+            const { height: viewHeight } = cartesianToLngLat(position) // 视线点高度
+            const { height: clampHeight } = cartesianToLngLat(resCartesian[index]) // 贴地点高度
+            if (clampHeight > viewHeight) {
+              divisionIndex = index
+              return true
+            } else {
+              return false
+            }
+          }
+        })
+
+        // 如果存在视线 分割点
+        if (division) {
+          clampGapPositions = resCartesian.slice(0, divisionIndex + 1) // 可见部分贴地点
+          // 视线被遮挡
+          visibleLineInfo.push({
+            visible: true, // 可见性
+            positions: [startPosition, division], // 位置
+            clamp: false // 是否开启贴地
+          })
+          visibleLineInfo.push({
+            visible: false,
+            positions: [division, endPosition],
+            clamp: false
+          })
+
+          // 规律五： 分割点后不可见部分的第一个波峰点 与 视线分割点 之间，必定可见
+          const invisibleFirstPeakPosition = calculatePeakPositions(resCartesian.slice(divisionIndex))[0]
+          if (invisibleFirstPeakPosition) {
+            visibleLineInfo.push({
+              visible: true,
+              positions: [division, invisibleFirstPeakPosition],
+              clamp: true
+            })
+            visibleLineInfo.push({
+              visible: false,
+              positions: [invisibleFirstPeakPosition, endPosition],
+              clamp: true
+            })
+          }
+        } else {
+          clampGapPositions = resCartesian
+          // 视线通畅
+          visibleLineInfo.push({
+            visible: true,
+            positions: [startPosition, endPosition],
+            clamp: false
+          })
+        }
+
+        const peakPositions = calculatePeakPositions(clampGapPositions) // 通过 贴地点 计算之间有多少个 波峰点
+
+        const lastClampPosition = clampGapPositions[clampGapPositions.length - 1] // 最后一个贴地点
+        // 如果有 波峰点， 则通过起点 和 波峰点计算射线
+        if (peakPositions.length) {
+
+          // 计算 观察点 与 每一个波峰点 在同一高度的距离
+          const startToPeakDistance = peakPositions.map((item) => {
+            return lngLatDistance(startPosition, item)
+          })
+          console.log('波峰距离', startToPeakDistance)
+
+          // 规律一： 起点 与 第一个波峰点之间，必定可见
+          visibleLineInfo.push({
+            visible: true,
+            positions: [startPosition, peakPositions[0]],
+            clamp: true
+          })
+
+          const rayIntersectPositionList = [] // 所有的视线地形交点
+          const rayIntersectDsitanceList = []
+
+          let peakIndex = 0 // 从哪个 波峰点 开始计算（索引下标）
+
+          peakPositions.forEach((position, index, arr) => {
+            // 单位向量，方向
+            const direction = Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(position, startPosition, new Cesium.Cartesian3()), new Cesium.Cartesian3())
+            const ray = new Cesium.Ray(startPosition, direction); // 射线
+            // 交点
+            const intersect = viewer.scene.pickFromRay(ray)
+            if (Cesium.defined(intersect)) {
+              const intersectPosition = intersect.position // 交点位置
+              const rayIntersectionDistance = lngLatDistance(startPosition, intersectPosition) // 观察点 - 地形相交点 的距离
+              rayIntersectPositionList.push(intersectPosition)
+              rayIntersectDsitanceList.push(rayIntersectionDistance)
+
+              // 找到 相交点 在哪个 波峰点 之前
+              const behindIndex = startToPeakDistance.findIndex((item) => {
+                return rayIntersectionDistance < item
+              })
+
+              if (index === peakIndex) {
+                // 规律二：波峰点 和 当前射线交点之间，必定不可见
+                if (startToPeakDistance[index] <= rayIntersectionDistance) {
+                  visibleLineInfo.push({
+                    visible: false,
+                    positions: [position, intersectPosition],
+                    clamp: true
+                  })
+                }
+                // 规律三： 当前射线交点 和 下一个波峰点 之间，必定可见
+                if (behindIndex !== -1) {
+                  const nextPeakDistance = startToPeakDistance[behindIndex] // 下一个波峰点的位置的距离
+                  visibleLineInfo.push({
+                    visible: true,
+                    positions: [intersectPosition, arr[behindIndex]],
+                    clamp: true
+                  })
+                }
+              }
+
+              if (behindIndex !== -1) {
+                peakIndex = behindIndex // 从这个索引下标开始找 波峰点
+              }
+            }
+          })
+          console.log('交点距离', rayIntersectDsitanceList)
+
+          // 规律四： 最远的视线地形相交点 与 最后一个贴地点 之间，必定可见
+          const distanceList = rayIntersectPositionList.map((position, index) => {
+            return {
+              index,
+              distance: lngLatDistance(startPosition, position)
+            }
+          })
+          const farIndex = minMax(distanceList)[1].index // 产生最远距离的那个视线地形相交点索引
+          visibleLineInfo.push({
+            visible: true,
+            positions: [rayIntersectPositionList[farIndex], lastClampPosition],
+            clamp: true
+          })
+
+        } else {
+          // 没有波峰点，表示一直是呈下降趋势，则地形都可见
+          visibleLineInfo.push({
+            visible: true,
+            positions: [startPosition, lastClampPosition],
+            clamp: true
+          })
+        }
+
+
+        // 使用 visibleLineInfo 中的数据，绘制分析结果线
+        if (visibleLineInfo.length) {
+          visibleLineInfo.forEach((item) => {
+            let color = Cesium.Color.GREEN
+            if (!item.visible) {
+              color = Cesium.Color.RED
+            }
+            const line = createLine(
+              item.positions,
+              color,
+              item.visible ? 2 : 3,
+              Cesium.Color.RED.withAlpha(0.1),
+              item.clamp
+            )
+            analysisLine.push(line)
+          })
+        }
+      })
+    };
+
+    // 计算 波峰点
+    const calculatePeakPositions = (clampPositions) => {
+      const peakPositions = [] // 处于 波峰 的位置点
+      let trend = 'down' // 根据趋势判断是 升 or 降
+      clampPositions.forEach((position, index, arr) => {
+        if (Cesium.defined(position)) {
+          if (index < arr.length - 1) {
+            const { height: indexHeight, lngLat } = cartesianToLngLat(position) // 当前贴地点高度
+            const { height: nextHeight } = cartesianToLngLat(arr[index + 1]) // 下一个贴地点点高度
+            const diff = indexHeight - nextHeight // 当前高度 - 下一个点高度 差异
+            if (trend === 'up' && diff > 0) {
+              // 此时表示呈上升趋势，但是下一个点的高度比当前点高度小，表示到达 波峰
+              // 将高度上升 0.1，防止建立射线的时候相交点在 波峰上
+              peakPositions.push(Cesium.Cartesian3.fromDegrees(lngLat[0], lngLat[1], indexHeight + 0.2))
+              const peakPoint = createViewPoint(position, '波峰')
+              analysisPoint.push(peakPoint)
+            }
+            if (diff <= 0) {
+              trend = 'up'
+            } else {
+              trend = 'down'
+            }
+          }
+        }
+      })
+      return peakPositions
+    }
+
+    // 笛卡尔 --> 经纬度，高度
+    const cartesianToLngLat = (cartesian) => {
+      const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+      const lng = Cesium.Math.toDegrees(cartographic.longitude);
+      const lat = Cesium.Math.toDegrees(cartographic.latitude);
+      const height = Number(cartographic.height.toFixed(2));
+      return {
+        lngLat: [lng, lat],
+        height,
+      };
+    }
+
+    // 计算两点经纬度之间的距离
+    const lngLatDistance = (start, end) => {
+      const {lngLat: startLngLat} = cartesianToLngLat(start)
+      const {lngLat: endLngLat} = cartesianToLngLat(end)
+      return Cesium.Cartesian3.distance(
+        Cesium.Cartesian3.fromDegrees(startLngLat[0], startLngLat[1], 0),
+        Cesium.Cartesian3.fromDegrees(endLngLat[0], endLngLat[1], 0)
+      )
+    }
+
+    // 小 --> 大 排序
+    const minMax = (arr) => {
+      // 数组元素排序
+      arr.sort((pre, next) => {
+        return pre.distance - next.distance
+      });
+      return [arr[0], arr[arr.length - 1]]
+    }
+
+    // 清除分析状态和结果
+    const clearAll = () => {
+      // 移除指示线
+      if (indecateLine) {
+        viewer.entities.remove(indecateLine)
+      }
+      indecateLine = null
+
+      // 标记点实体
+      if (pickPoints.length) {
+        pickPoints.forEach((item) => {
+          viewer.entities.remove(item.point); // 标记点
+          viewer.entities.remove(item.label); // 标记文本
+        });
+      }
+      pickPoints = []
+
+      // 移除分析结果线
+      if (analysisLine.length) {
+        analysisLine.forEach((line) => {
+          viewer.entities.remove(line)
+        })
+      }
+      analysisLine = []
+
+      // 移除分析结果点
+      if (analysisPoint.length) {
+        analysisPoint.forEach(({point, label}) => {
+          viewer.entities.remove(point)
+          viewer.entities.remove(label)
+        })
+      }
+      analysisPoint = []
+      
+      // 标记点位置
+      pickPositions = []
+      // 视线点
+      viewLineGapPositions = []
+      // 贴地点
+      clampGapPositions = []
+      // 选择状态
+      isPicking = false
+      // 移除事件监听
+      controlMouseEvent(false)
+    }
+  </script>
+</body>
+
+</html>
