@@ -1,0 +1,39 @@
+<!-- Author: LovelyKein -->
+<!-- Mail: lovelyKein@foxmain.com -->
+<!-- Time: 2023-02-20 -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vue 2 中 v-model 指令原理</title>
+</head>
+<body>
+  <input type="text" id="input" placeholder="输入内容">
+  <p style="color: #202020;" id="label"></p>
+
+  <script>
+    const data = {}
+
+    /* Object.defineProperty */
+    Object.defineProperty(data, 'input', {
+      get() {
+        console.log('获取值')
+        return data.input
+      },
+      set(value) {
+        console.log('设置值')
+        document.getElementById('label').innerText = value
+      }
+    })
+
+    document.getElementById('input').addEventListener('input', (event) => {
+      console.log(event)
+      data.input = event.target.value
+    })
+  </script>
+</body>
+</html>
+
