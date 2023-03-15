@@ -1,0 +1,355 @@
+<!-- Author: LovelyKein -->
+<!-- Mail: lovelyKein@foxmain.com -->
+<!-- Time: 2023-03-15 -->
+<!DOCTYPE html>
+<html lang="en" style="width: 100%; height: 100vh">
+  <head style="width: 100%; height: 100%">
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.102/Build/Cesium/Cesium.js"></script>
+    <link
+      href="https://cesium.com/downloads/cesiumjs/releases/1.102/Build/Cesium/Widgets/widgets.css"
+      rel="stylesheet"
+    />
+    <title>多点规划轨迹动画</title>
+    <style>
+      * {
+        padding: 0;
+        margin: 0;
+        border: none;
+      }
+
+      #cesium_container {
+        width: 100%;
+        height: 100%;
+      }
+
+      .btn {
+        position: absolute;
+        top: 1vw;
+        left: 1vw;
+        display: flex;
+        justify-content: flex-start;
+        align-items: center;
+        flex-wrap: nowrap;
+        flex-direction: row;
+      }
+
+      .btn > button {
+        outline: none;
+        border: none;
+        height: 34px;
+        border-radius: 4px;
+        padding: 0 10px;
+        box-sizing: border-box;
+        color: #202020;
+        font-size: 14px;
+        font-weight: normal;
+        text-align: center;
+        line-height: 1em;
+        background-color: #eeeeee;
+        opacity: 0.9;
+        transition: all 0.2s;
+        margin-left: 1vw;
+        cursor: pointer;
+      }
+
+      .btn > button:first-child {
+        margin-left: 0;
+      }
+
+      .btn > button:hover {
+        background-color: #ffffff;
+        opacity: 1;
+      }
+    </style>
+  </head>
+
+  <body style="width: 100%; height: 100%">
+    <!-- 地图容器 -->
+    <div id="cesium_container"></div>
+    <div class="btn">
+      <button class="choose" onclick="toggleAnimation(true)">播放动画</button>
+      <button class="clear" onclick="toggleAnimation(false)">清除轨迹</button>
+    </div>
+    <script>
+      // 设置 cesium token
+      Cesium.Ion.defaultAccessToken =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJjYjkyZWNjNC00NmVkLTQ3OTktOTUwOC0yODlmNjMxOTRjZjQiLCJpZCI6MTA4OTA1LCJpYXQiOjE2NjM4NDc3NTl9.D-ndvVOBsHIBY0doIFl4yJmr5iTE7ZEDLkZrZ4kMI9s";
+
+      // 设置 Cesium 初始化时的默认位置视角（中国大陆）
+      Cesium.Camera.DEFAULT_VIEW_RECTANGLE = Cesium.Rectangle.fromDegrees(
+        89.5, // 西经
+        20.4, // 南纬
+        110.4, // 东经
+        61.2 // 北纬
+      );
+
+      const viewer = new Cesium.Viewer("cesium_container", {
+        geocoder: false, // 是否创建 搜索 组件按钮
+        homeButton: true, // 是否创建 home 组件按钮
+        infoBox: false, // 关闭信息窗口，解决控制台报错
+        sceneModePicker: false, // 是否创建 视角模式 组件按钮
+        baseLayerPicker: false, // 是否创建 图层选择 组件按钮
+        navigationHelpButton: false, // 是否创建 操作帮助 组件按钮
+        animation: false, // 是否创建 动画 组件
+        timeline: false, // 是否创建 时间轴 组件
+        fullscreenButton: true, // 是否创建 全屏 组件按钮
+        vrButton: false, // 是否创建 VR模式 组件按钮
+        scene3DOnly: true, // 是否只显示 3D 视角
+      });
+      viewer.cesiumWidget.creditContainer.style.display = "none"; // 去掉 logo 水印
+    </script>
+    <script>
+      // 数据
+      const speed = 20; // 8m/s
+      const mockInfoList = [
+        {
+          id: "GF5668BRT",
+          name: "UAV_GF566",
+          model: "DJI Mavic2",
+          // 无人机路径
+          path: [
+            {
+              lngLat: [121.5885033, 31.2181373],
+              height: 10,
+            },
+            {
+              lngLat: [121.594947, 31.2200911],
+              height: 50,
+            },
+            {
+              lngLat: [121.5944093, 31.224843],
+              height: 70,
+            },
+            {
+              lngLat: [121.5961888, 31.2253959],
+              height: 80,
+            },
+            {
+              lngLat: [121.5966606, 31.2240611],
+              height: 90,
+            },
+            {
+              lngLat: [121.5970818, 31.2238503],
+              height: 100,
+            },
+            {
+              lngLat: [121.598232, 31.224138],
+              height: 110,
+            },
+          ],
+        },
+      ];
+      const uavFlyMap = new window.Map();
+
+      function toggleAnimation(flag) {
+        if (flag) {
+          // 开启动画
+          mockInfoList.forEach((uavInfo) => {
+            const { id, name, path } = uavInfo;
+            const { uav, label } = createModel(
+              "/assets/Cesium_Air.glb",
+              path[0].lngLat[0],
+              path[0].lngLat[1],
+              path[0].height,
+              50,
+              id,
+              name
+            );
+            const line = flyPathByMultipoint(path, speed, uav, label);
+            uavFlyMap.set(id, { uav, label, line });
+            viewer.trackedEntity = uav;
+          });
+        } else {
+          // 清除动画
+          if (uavFlyMap.size) {
+            uavFlyMap.forEach((value) => {
+              const { uav, label, line } = value;
+              viewer.entities.remove(uav);
+              viewer.entities.remove(label);
+              viewer.entities.remove(line);
+            });
+            uavFlyMap.clear();
+            viewer.trackedEntity = null;
+            viewer.camera.flyHome()
+          }
+        }
+      }
+
+      // 创建无人机
+      function createModel(
+        url = "/assets/Cesium_Air.glb",
+        lng,
+        lat,
+        height,
+        size = 50,
+        id,
+        name = "Drone"
+      ) {
+        const position = Cesium.Cartesian3.fromDegrees(lng, lat, height); // 经度、维度、高度
+        // 无人机
+        const uav = viewer.entities.add({
+          id,
+          name,
+          position,
+          model: {
+            uri: url,
+            minimumPixelSize: size,
+            maximumScale: 20000,
+          },
+        });
+
+        // 文字标签
+        const label = viewer.entities.add({
+          position,
+          label: {
+            id: id + "label",
+            text: name,
+            font: "14px Helvetica",
+            fillColor: Cesium.Color.SKYBLUE,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            pixelOffset: new Cesium.Cartesian2(0, -size), // 文字偏移量
+            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+            verticalOrigin: Cesium.VerticalOrigin.TOP,
+          },
+        });
+        return {
+          uav,
+          label,
+        };
+      }
+
+      // 多点规划路线
+      function flyPathByMultipoint(path, speed = 10, uav, label) {
+        let done = false; // 是否需要终止
+        let index = 0;
+        // 当前时间
+        let start_time = new Date().getTime() / 1000; // 当前时间的 秒
+        // 处理路径
+        let line_path_cartesian = [];
+        const finish_cartesian = [];
+        path.forEach((item) => {
+          const { lngLat, height } = item;
+          line_path_cartesian.push(
+            Cesium.Cartesian3.fromDegrees(lngLat[0], lngLat[1], height)
+          );
+          finish_cartesian.push(
+            Cesium.Cartesian3.fromDegrees(lngLat[0], lngLat[1], height)
+          );
+        });
+        // 方向列表
+        const direction_list = [];
+        path.forEach((item, index, arr) => {
+          if (index < arr.length - 1) {
+            const index_position = Cesium.Cartesian3.fromDegrees(
+              item.lngLat[0],
+              item.lngLat[1],
+              item.height
+            );
+            const next_position = Cesium.Cartesian3.fromDegrees(
+              arr[index + 1].lngLat[0],
+              arr[index + 1].lngLat[1],
+              arr[index + 1].height
+            );
+            const direction = Cesium.Cartesian3.normalize(
+              Cesium.Cartesian3.subtract(
+                next_position,
+                index_position,
+                new Cesium.Cartesian3()
+              ),
+              new Cesium.Cartesian3()
+            );
+            direction_list.push(direction);
+          }
+        });
+        // 四元数
+        const quaternion_list = [];
+        direction_list.forEach((item, index) => {
+          quaternion_list.push(
+            computedQuaternionFromPositionAndDirection(
+              finish_cartesian[index],
+              item
+            )
+          );
+        });
+        const line_entity = new Cesium.Entity({
+          polyline: {
+            positions: new Cesium.CallbackProperty(() => {
+              if (done) {
+                return [...finish_cartesian];
+              }
+              const index_direction = direction_list[index]; // 当前依赖路径的索引的方向，单位向量
+              const now_time = new Date().getTime() / 1000;
+              const elapse_time = now_time - start_time;
+              const increment = speed * elapse_time;
+              const add_cartesian = new Cesium.Cartesian3(
+                index_direction.x * increment,
+                index_direction.y * increment,
+                index_direction.z * increment
+              ); // 向量增量
+
+              // 当前位置
+              let current_position = Cesium.Cartesian3.add(
+                finish_cartesian[index],
+                add_cartesian,
+                new Cesium.Cartesian3()
+              );
+
+              finish_cartesian.forEach((_, i) => {
+                if (i > index) {
+                  line_path_cartesian[i] = current_position; // // 线条位置
+                }
+              });
+              if (uav) {
+                uav.position = current_position; // 无人机位置
+                uav.orientation = quaternion_list[index]; // 四元数
+              }
+              if (label) {
+                label.position = current_position; // 标签位置
+              }
+
+              const next_end = finish_cartesian[index + 1]; // 下一个转折终点
+              const current_distance = Cesium.Cartesian3.distance(
+                finish_cartesian[index],
+                current_position
+              ); // 当前位置与上一个转折点的距离
+              const fragment_distance = Cesium.Cartesian3.distance(
+                finish_cartesian[index],
+                next_end
+              ); // 上一个转折点到下一个转折点的距离
+              if (current_distance >= fragment_distance - 0.1) {
+                // 0.1 为容差值
+                index++; // 索引增加
+                start_time = new Date().getTime() / 1000; // 重置时间
+                if (index >= direction_list.length) {
+                  done = true; // 终止算法
+                }
+              }
+
+              return [...line_path_cartesian];
+            }, false),
+            width: 1,
+            material: Cesium.Color.YELLOW,
+            clampToGround: false,
+          },
+        });
+        viewer.entities.add(line_entity);
+        return line_entity;
+      }
+
+      // 根据位置和方向计算四元数
+      function computedQuaternionFromPositionAndDirection(position, direction) {
+        const matrix_3 = Cesium.Transforms.rotationMatrixFromPositionVelocity(
+          position,
+          direction
+        );
+        const quaternion = Cesium.Quaternion.fromRotationMatrix(matrix_3);
+        return quaternion;
+      }
+    </script>
+  </body>
+</html>
