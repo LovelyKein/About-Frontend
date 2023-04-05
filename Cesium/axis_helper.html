@@ -1,0 +1,392 @@
+<!-- Author: LovelyKein -->
+<!-- Mail: lovelyKein@foxmail.com -->
+<!-- Time: 2023-04-05 -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.104/Build/Cesium/Cesium.js"></script>
+    <link
+      href="https://cesium.com/downloads/cesiumjs/releases/1.104/Build/Cesium/Widgets/widgets.css"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/global.css" />
+    <title>模型-局部坐标系绘制辅助坐标轴</title>
+  </head>
+
+  <body>
+    <!-- 地图容器 -->
+    <div id="cesium_container"></div>
+
+    <!-- 场景初始化 -->
+    <script>
+      // 设置 cesium token
+      Cesium.Ion.defaultAccessToken =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJjYjkyZWNjNC00NmVkLTQ3OTktOTUwOC0yODlmNjMxOTRjZjQiLCJpZCI6MTA4OTA1LCJpYXQiOjE2NjM4NDc3NTl9.D-ndvVOBsHIBY0doIFl4yJmr5iTE7ZEDLkZrZ4kMI9s";
+
+      // 设置 Cesium 初始化时的默认位置视角（中国大陆）
+      Cesium.Camera.DEFAULT_VIEW_RECTANGLE = Cesium.Rectangle.fromDegrees(
+        89.5, // 西经
+        20.4, // 南纬
+        110.4, // 东经
+        61.2 // 北纬
+      );
+
+      const viewer = new Cesium.Viewer("cesium_container", {
+        geocoder: false, // 是否创建 搜索 组件按钮
+        homeButton: true, // 是否创建 home 组件按钮
+        infoBox: false, // 关闭信息窗口，解决控制台报错
+        sceneModePicker: false, // 是否创建 视角模式 组件按钮
+        baseLayerPicker: false, // 是否创建 图层选择 组件按钮
+        navigationHelpButton: false, // 是否创建 操作帮助 组件按钮
+        animation: false, // 是否创建 动画 组件
+        timeline: false, // 是否创建 时间轴 组件
+        fullscreenButton: true, // 是否创建 全屏 组件按钮
+        vrButton: false, // 是否创建 VR模式 组件按钮
+        scene3DOnly: true, // 是否只显示 3D 视角
+        shouldAnimate: true, // 是否开启动画
+        shadows: true, // 是否开启阴影
+        terrainShadows: Cesium.ShadowMode.RECEIVE_ONLY, // 地形阴影模式
+      });
+      viewer.cesiumWidget.creditContainer.style.display = "none"; // 去掉 logo 水印
+    </script>
+
+    <!-- 方法 -->
+    <script lang="js">
+      /**
+       * @description 添加模型
+       * @param {string} url
+       * @param {Cesium.Cartesian3} position
+       * @param {number} size
+       * @param {string | number} id
+       * @param {string} name
+       * @return {Cesium.Entity}
+      **/
+      function createModel(
+        url = "/assets/aircraft_orange.glb",
+        position,
+        size = 50,
+        id,
+        name = "model"
+      ) {
+        // 无人机
+        const uav = new Cesium.Entity({
+          id,
+          name,
+          position,
+          model: {
+            uri: url,
+            minimumPixelSize: size,
+            maximumScale: 20000,
+          },
+        });
+        return uav
+      }
+
+
+      class Axis {
+        viewer
+        target
+        handler = null
+
+        init_position
+        current_position
+        world_matrix4
+
+        axis_length = 0
+        axis_width = 4
+
+        map = {
+          X: {
+            color: '#ff0000',
+            unit_cartesian: Cesium.Cartesian3.UNIT_X
+          },
+          Y: {
+            color: '#00ff00',
+            unit_cartesian: Cesium.Cartesian3.UNIT_Y
+          },
+          Z: {
+            color: '#0000ff',
+            unit_cartesian: Cesium.Cartesian3.UNIT_Z
+          }
+        }
+
+        axis_primitive = null // 轴基类
+
+        is_select = false // 是否选中
+        click_id = null
+
+        /**
+         * @description 创建坐标轴
+         * @param {Cesium.Viewer} viewer
+         * @param {Cesium.Cartesian3} position
+         * @param {number} length
+         * @param {number} width
+        **/
+        constructor(viewer, target, position, length, width) {
+          this.viewer = viewer
+          this.target = target
+          this.init_position = position.clone()
+          this.current_position = position.clone()
+          this.axis_length = length
+          this.axis_width = width
+          this.createHandler()
+          this.init()
+        }
+
+        // 移除事件柄
+        removeEvent() {
+          if (this.handler) {
+            this.handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOWN)
+            this.handler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+            this.handler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_UP)
+          }
+        }
+
+        /**
+         * @description 控制相机是否可以移动
+         * @param {boolean} state
+        **/
+        controlCamera(state) {
+          if (!this.viewer) return
+          // 如果为真，则允许用户旋转相机。如果为假，相机将锁定到当前标题。此标志仅适用于2D和3D
+          this.viewer.scene.screenSpaceCameraController.enableRotate = state
+          // 如果为true，则允许用户平移地图。如果为假，相机将保持锁定在当前位置。此标志仅适用于2D和Columbus视图模式
+          this.viewer.scene.screenSpaceCameraController.enableTranslate = state
+          // 如果为真，允许用户放大和缩小。如果为假，相机将锁定到距离椭圆体的当前距离
+          this.viewer.scene.screenSpaceCameraController.enableZoom = state
+          // 如果为真，则允许用户倾斜相机。如果为假，相机将锁定到当前标题。这个标志只适用于3D和哥伦布视图
+          this.viewer.scene.screenSpaceCameraController.enableTilt = state
+        }
+
+        /**
+         * @description 通过 id 设置基类颜色
+         * @param {string} id
+         * @param {string} color
+         * @param {number} alpha
+        **/
+        setColorById(id, color, alpha = 1.0) {
+          if (!this.axis_primitive) throw new Error('坐标轴未初始化')
+          const attributes = this.axis_primitive.getGeometryInstanceAttributes(id)
+          if (attributes) {
+            attributes.color = Cesium.ColorGeometryInstanceAttribute.toValue(
+              Cesium.Color.fromCssColorString(color).withAlpha(alpha)
+            )
+          }
+        }
+        
+        
+        /**
+         * @description 移动动作
+         * @param {Cesium.Cartesian3} position
+         * @param {Cesium.Cartesian3} direction
+         * @param {number} momentum
+        **/
+        translateAxis(direction, momentum) {
+          // 平移
+          if (!this.target) throw new Error('未选中目标')
+          this.world_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(this.current_position) // 当前世界坐标矩阵
+          const translation = Cesium.Cartesian3.multiplyByScalar(direction, momentum, new Cesium.Cartesian3()) // 移动量
+          const end_position = Cesium.Matrix4.multiplyByPoint(this.world_matrix4, translation, new Cesium.Cartesian3()) // 终点坐标
+          const end_world_matrix4 = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.subtract(end_position, position, new Cesium.Cartesian3())) // 终点世界坐标矩阵
+
+          this.target.position = end_position
+          this.axis_primitive.modelMatrix = end_world_matrix4
+        }
+        
+        rotationAxis() {
+          // 旋转
+        }
+
+        // 创建鼠标事件
+        createHandler() {
+          const directonArr = ['X', 'Y', 'Z']
+          // const actionArr = ['AXIS', 'ROTATION']
+          this.handler = new Cesium.ScreenSpaceEventHandler(this.viewer.scene.canvas) // 事件柄
+          // 鼠标左键按下
+          this.handler.setInputAction((down_event) => {
+            // down_event.position 为画布的二维坐标
+            const pickObject = viewer.scene.pick(down_event.position)
+            if (pickObject) {
+              // 点击到了物体
+              const { id } = pickObject
+              // 选中的是辅助轴基类
+              if (typeof id === 'string') {
+                const [directon, action] = id.split('_') || []
+                if (!directonArr.includes(directon)) return
+
+                const down_position = down_event.position // 鼠标按下的屏幕坐标
+
+                this.is_select = true
+                this.click_id = id
+                this.controlCamera(false) // 禁止相机
+                const color = this.map[directon].color
+                this.setColorById(this.click_id, color, 1.0)
+
+                // 鼠标移动
+                this.handler.setInputAction((move_event) => {
+                  if(!this.is_select || !this.click_id) return
+                  // console.log(move_event)
+                  const move_position = move_event.endPosition // 鼠标移动的屏幕坐标
+
+                  const delta_x = move_position.x - down_position.x
+                  const delta_y = -(move_position.y - down_position.y)
+                  const momentum = Math.abs(delta_x) >= Math.abs(delta_y) ? delta_x : delta_y // 动量
+                  if (action === 'AXIS') {
+                    // 移动轴
+                    this.translateAxis(this.map[directon].unit_cartesian, momentum / 20)
+                  } else {
+                    // 旋转轴
+                    this.rotationAxis()
+                  }
+
+                }, Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+
+                // 鼠标左键抬起
+                this.handler.setInputAction((up_event) => {
+                  console.log(up_event)
+                  this.setColorById(this.click_id, color, 0.5)
+                  this.controlCamera(true)
+                  this.is_select = false // 退出移动
+                  this.click_id = null // 重置选中轴
+                  this.current_position = this.target.position.getValue(Cesium.JulianDate.now()) // 设置位置
+                }, Cesium.ScreenSpaceEventType.LEFT_UP)
+              }
+            } else {
+              // 未获取到物体
+            }
+          }, Cesium.ScreenSpaceEventType.LEFT_DOWN)
+        }
+
+        init() {
+          this.world_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(this.current_position) // 世界坐标矩阵
+
+          // 初始化平移轴实例
+          const x_axis_instance = this.createAxisInstance('X_AXIS', this.current_position, [1, 0, 0], this.axis_length, this.axis_width, this.map.X.color) // x
+          const y_axis_instance = this.createAxisInstance('Y_AXIS', this.current_position, [0, 1, 0], this.axis_length, this.axis_width, this.map.Y.color) // y
+          const z_axis_instance = this.createAxisInstance('Z_AXIS', this.current_position, [0, 0, 1], this.axis_length, this.axis_width, this.map.Z.color) // z
+
+          // 初始化旋转轴实例
+          const x_rotation_instance = this.createRotationAxisInstance('X_ROTATION', this.current_position, [1, 0, 0], this.axis_length / 2, this.axis_width, this.map.X.color) // x
+          const y_rotation_instance = this.createRotationAxisInstance('Y_ROTATION', this.current_position, [0, 1, 0], this.axis_length / 2, this.axis_width, this.map.Y.color) // y
+          const z_rotation_instance = this.createRotationAxisInstance('Z_ROTATION', this.current_position, [0, 0, 1], this.axis_length / 2, this.axis_width, this.map.Z.color) // z
+
+          this.axis_primitive = this.viewer.scene.primitives.add(
+            new Cesium.Primitive({
+              geometryInstances: [x_axis_instance, y_axis_instance, z_axis_instance, x_rotation_instance, y_rotation_instance, z_rotation_instance],
+              appearance: new Cesium.PolylineColorAppearance({
+                translucent: true
+              }),
+              show: true,
+              asynchronous: false
+            })
+          )
+        }
+
+        /**
+         * @description 创建平移坐标轴的实例
+         * @param {string} id ID
+         * @param {Cesium.Cartesian3} position 坐标轴起点
+         * @param {number[]} directon 方向向量
+         * @param {number} length 轴长
+         * @param {number} width 线宽
+         * @param {string} color 颜色
+         * @return {Cesium.GeometryInstance}
+        **/
+        createAxisInstance(id, position, directon = [0, 0, 0], length, width, color) {
+          const unit = Cesium.Cartesian3.fromArray(directon)
+          const translation = Cesium.Cartesian3.multiplyByScalar(unit, length, new Cesium.Cartesian3(0, 0, 0))
+          const end = Cesium.Matrix4.multiplyByPoint(this.world_matrix4, translation, new Cesium.Cartesian3(0, 0, 0)) // 终点坐标
+
+          const geometry = Cesium.PolylineGeometry.createGeometry(
+            new Cesium.PolylineGeometry({
+              positions: [position, end],
+              width,
+              vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT
+            })
+          )
+          const instance = new Cesium.GeometryInstance({
+            geometry,
+            id,
+            attributes: {
+              color: Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString(color).withAlpha(0.5))
+            }
+          })
+          return instance
+        }
+
+        // 计算旋转圆轴的点位
+        calculateCircle(center, radius, normal) {
+          const index = normal.findIndex((item) => item >= 1) // 该索引代表值为 中心点对应索引的坐标
+          // const dimension = index === 0 ? 'x' : index === 1 ? 'y' : 'z'
+          const positions = []
+          for(let item = 0; item <= 360; item++) {
+            const sin = Math.sin(Cesium.Math.toRadians(item))
+            const cos = Math.cos(Cesium.Math.toRadians(item))
+            const points = [radius * sin, radius * cos]
+            // const value = center[dimension]
+            if (index === 0) {
+              points.unshift(0)
+            } else if (index === 1) {
+              points.splice(1, 0, 0)
+            } else if (index === 2) {
+              points.push(0)
+            }
+            positions.push(Cesium.Cartesian3.fromArray(points))
+          }
+          return positions
+        }
+
+        /**
+         * @description 创建旋转轴的实例
+         * @param {string} id ID
+         * @param {Cesium.Cartesian3} center_position 中心位置
+         * @param {number[]} normal 法线向量
+         * @param {number} radius 半径
+         * @param {number} width 线宽
+         * @param {string} color 颜色
+         * @return {Cesium.GeometryInstance}
+        **/
+        createRotationAxisInstance(id, center_position, normal, radius, width, color) {
+          const positions = this.calculateCircle(center_position, radius, normal)
+          const geometry = Cesium.PolylineGeometry.createGeometry(
+            new Cesium.PolylineGeometry({
+              positions,
+              width,
+              vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT,
+            })
+          )
+
+          // const world_center_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(new Cesium.Cartesian3()) // 世界中心矩阵
+          // const end_position = Cesium.Matrix4.multiplyByPoint(world_center_matrix4, center_position, new Cesium.Cartesian3()) // 终点坐标
+          // const end_world_matrix4 = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.subtract(end_position, new Cesium.Cartesian3(0, 0, 0), new Cesium.Cartesian3())) // 终点世界坐标矩阵
+          const instance = new Cesium.GeometryInstance({
+            geometry,
+            id,
+            attributes: {
+              color: Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString(color).withAlpha(0.5))
+            },
+            // modelMatrix: end_world_matrix4
+          })
+          return instance
+        }
+      }
+    </script>
+
+    <script lang="js">
+      const position = Cesium.Cartesian3.fromDegrees(115.2374237, 28.3874623, 100) // 位置
+      const axis_length = 20 //轴长
+      const axis_width = 3 // 轴宽
+
+      const uav = createModel('/assets/uav.glb', position, 30, 'UAV')
+      viewer.entities.add(uav)
+      // viewer.trackedEntity = uav
+      viewer.zoomTo(uav)
+
+      const axis = new Axis(viewer, uav, position, axis_length, axis_width)
+      // console.log(axis)
+    </script>
+  </body>
+</html>
