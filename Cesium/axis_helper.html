@@ -89,14 +89,14 @@
       class Axis {
         viewer
         target
-        handler = null
+        handler
 
         init_position
         current_position
         world_matrix4
 
-        axis_length = 0
-        axis_width = 4
+        axis_length
+        axis_width
 
         map = {
           X: {
@@ -180,17 +180,16 @@
         
         /**
          * @description 移动动作
-         * @param {Cesium.Cartesian3} position
          * @param {Cesium.Cartesian3} direction
          * @param {number} momentum
         **/
         translateAxis(direction, momentum) {
           // 平移
           if (!this.target) throw new Error('未选中目标')
-          this.world_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(this.current_position) // 当前世界坐标矩阵
+          this.world_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(this.current_position.clone()) // 当前世界坐标矩阵
           const translation = Cesium.Cartesian3.multiplyByScalar(direction, momentum, new Cesium.Cartesian3()) // 移动量
           const end_position = Cesium.Matrix4.multiplyByPoint(this.world_matrix4, translation, new Cesium.Cartesian3()) // 终点坐标
-          const end_world_matrix4 = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.subtract(end_position, position, new Cesium.Cartesian3())) // 终点世界坐标矩阵
+          const end_world_matrix4 = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.subtract(end_position, this.init_position.clone(), new Cesium.Cartesian3())) // 终点世界坐标矩阵
 
           this.target.position = end_position
           this.axis_primitive.modelMatrix = end_world_matrix4
@@ -246,7 +245,7 @@
 
                 // 鼠标左键抬起
                 this.handler.setInputAction((up_event) => {
-                  console.log(up_event)
+                  // console.log(up_event)
                   this.setColorById(this.click_id, color, 0.5)
                   this.controlCamera(true)
                   this.is_select = false // 退出移动
@@ -297,8 +296,8 @@
         **/
         createAxisInstance(id, position, directon = [0, 0, 0], length, width, color) {
           const unit = Cesium.Cartesian3.fromArray(directon)
-          const translation = Cesium.Cartesian3.multiplyByScalar(unit, length, new Cesium.Cartesian3(0, 0, 0))
-          const end = Cesium.Matrix4.multiplyByPoint(this.world_matrix4, translation, new Cesium.Cartesian3(0, 0, 0)) // 终点坐标
+          const translation = Cesium.Cartesian3.multiplyByScalar(unit, length, new Cesium.Cartesian3())
+          const end = Cesium.Matrix4.multiplyByPoint(this.world_matrix4, translation, new Cesium.Cartesian3()) // 终点坐标
 
           const geometry = Cesium.PolylineGeometry.createGeometry(
             new Cesium.PolylineGeometry({
@@ -320,21 +319,12 @@
         // 计算旋转圆轴的点位
         calculateCircle(center, radius, normal) {
           const index = normal.findIndex((item) => item >= 1) // 该索引代表值为 中心点对应索引的坐标
-          // const dimension = index === 0 ? 'x' : index === 1 ? 'y' : 'z'
           const positions = []
-          for(let item = 0; item <= 360; item++) {
+          for(let item = 0; item <= 360; item += 2) {
             const sin = Math.sin(Cesium.Math.toRadians(item))
             const cos = Math.cos(Cesium.Math.toRadians(item))
-            const points = [radius * sin, radius * cos]
-            // const value = center[dimension]
-            if (index === 0) {
-              points.unshift(0)
-            } else if (index === 1) {
-              points.splice(1, 0, 0)
-            } else if (index === 2) {
-              points.push(0)
-            }
-            positions.push(Cesium.Cartesian3.fromArray(points))
+            const points = [radius * cos, radius * sin, 0]
+            positions.push(Cesium.Cartesian3.fromArray(points)) // 默认创建 XY 平面，垂直于 Z 轴
           }
           return positions
         }
@@ -350,6 +340,21 @@
          * @return {Cesium.GeometryInstance}
         **/
         createRotationAxisInstance(id, center_position, normal, radius, width, color) {
+          const position_world_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(center_position)
+          const index = normal.findIndex((item) => item >= 1) // 轴向索引
+
+          if (index === 0) {
+            // 垂直于 X 轴
+            const rotation_y_matrix3 = Cesium.Matrix3.fromRotationY(Math.PI / 2) // 沿 Y 轴旋转
+            const rotation_matrix4 = Cesium.Matrix4.fromRotation(rotation_y_matrix3)
+            Cesium.Matrix4.multiply(position_world_matrix4, rotation_matrix4, position_world_matrix4)
+          } else if (index === 1) {
+            // 垂直于 Y 轴
+            const rotation_x_matrix3 = Cesium.Matrix3.fromRotationX(Math.PI / 2) // 沿 X 轴旋转
+            const rotation_matrix4 = Cesium.Matrix4.fromRotation(rotation_x_matrix3)
+            Cesium.Matrix4.multiply(position_world_matrix4, rotation_matrix4, position_world_matrix4)
+          }
+
           const positions = this.calculateCircle(center_position, radius, normal)
           const geometry = Cesium.PolylineGeometry.createGeometry(
             new Cesium.PolylineGeometry({
@@ -358,17 +363,13 @@
               vertexFormat: Cesium.PolylineColorAppearance.VERTEX_FORMAT,
             })
           )
-
-          // const world_center_matrix4 = Cesium.Transforms.eastNorthUpToFixedFrame(new Cesium.Cartesian3()) // 世界中心矩阵
-          // const end_position = Cesium.Matrix4.multiplyByPoint(world_center_matrix4, center_position, new Cesium.Cartesian3()) // 终点坐标
-          // const end_world_matrix4 = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.subtract(end_position, new Cesium.Cartesian3(0, 0, 0), new Cesium.Cartesian3())) // 终点世界坐标矩阵
           const instance = new Cesium.GeometryInstance({
             geometry,
             id,
             attributes: {
               color: Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString(color).withAlpha(0.5))
             },
-            // modelMatrix: end_world_matrix4
+            modelMatrix: position_world_matrix4
           })
           return instance
         }
